@@ -1,42 +1,94 @@
 import fs from 'fs';
 import path from 'path';
-import { get as blobGet, put as blobPut } from '@vercel/blob';
+import { Low } from 'lowdb';
+import { JSONFile } from 'lowdb/node';
 import defaultConfig from './default-config.json';
+import { EmailSignature } from '../shared/render-email';
+
+export type { EmailSignature };
 
 export interface EmailConfig {
   subject: string;
-  title: string;
   body: string;
+  signature: EmailSignature;
 }
 
-const FIELDS = ['subject', 'title', 'body'] as const;
-const MAX_LENGTH: Record<(typeof FIELDS)[number], number> = { subject: 300, title: 300, body: 20000 };
+const FIELDS = ['subject', 'body'] as const;
+const MAX_LENGTH: Record<(typeof FIELDS)[number], number> = { subject: 300, body: 20000 };
 
-// Saved edits (from the admin page) live in Vercel Blob under this private pathname,
-// since a serverless function cannot write to its own deployed files. Without a
-// connected Blob store (no BLOB_READ_WRITE_TOKEN), edits only last for the current
-// invocation and the bundled default below is used every time the function cold-starts.
-const BLOB_PATHNAME = 'email-config.json';
+// Signature fields are all optional free text: a blank field just doesn't render its
+// line in the email. `enabled` toggles the whole block on or off.
+const SIGNATURE_TEXT_FIELDS = ['closing', 'name', 'jobTitle', 'company', 'address', 'phone', 'email'] as const;
+const SIGNATURE_MAX_LENGTH: Record<(typeof SIGNATURE_TEXT_FIELDS)[number], number> = {
+  closing: 100,
+  name: 150,
+  jobTitle: 150,
+  company: 150,
+  address: 500,
+  phone: 60,
+  email: 254,
+};
 
-// Local-only persistence for `next dev` / `next start` on a real filesystem, so saved
-// edits survive a restart the same way they did before, without needing a Blob store.
-const LOCAL_CONFIG_PATH = path.join(process.cwd(), 'data', 'email-config.local.json');
-const isVercel = Boolean(process.env.VERCEL);
+const EMPTY_SIGNATURE: EmailSignature = {
+  enabled: false,
+  closing: '',
+  name: '',
+  jobTitle: '',
+  company: '',
+  address: '',
+  phone: '',
+  email: '',
+};
 
-// In-memory cache, valid only for the lifetime of this warm serverless instance.
-let cached: EmailConfig | null = null;
+// Saved edits (from the admin page) are kept in a small JSON database file (lowdb).
+// On Vercel, only /tmp is writable, and it is wiped on every cold start and is not
+// shared across instances, so a save there only lasts until the next cold start — it
+// does not survive a redeploy or reliably reach every running instance. Locally
+// (`next dev` / `next start`), the file lives under `data/` and persists normally.
+const DB_PATH = process.env.VERCEL
+  ? path.join('/tmp', 'email-config.json')
+  : path.join(process.cwd(), 'data', 'email-config.json');
 
-function hasBlobStore() {
-  return Boolean(process.env.BLOB_READ_WRITE_TOKEN);
-}
+const DEFAULT_CONFIG: EmailConfig = {
+  ...(defaultConfig as Omit<typeof defaultConfig, 'signature'>),
+  signature: { ...EMPTY_SIGNATURE, ...((defaultConfig as { signature?: Partial<EmailSignature> }).signature ?? {}) },
+} as EmailConfig;
 
-function readLocalFile(): EmailConfig | null {
-  try {
-    const { value } = validate(JSON.parse(fs.readFileSync(LOCAL_CONFIG_PATH, 'utf8')));
-    return value ?? null;
-  } catch {
-    return null;
+let dbPromise: Promise<Low<EmailConfig>> | null = null;
+
+async function getDb(): Promise<Low<EmailConfig>> {
+  if (!dbPromise) {
+    dbPromise = (async () => {
+      fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+      const db = new Low<EmailConfig>(new JSONFile(DB_PATH), { ...DEFAULT_CONFIG });
+      await db.read();
+      const { value } = validate(db.data);
+      db.data = value ?? { ...DEFAULT_CONFIG };
+      return db;
+    })();
   }
+  return dbPromise;
+}
+
+function validateSignature(input: unknown): { value?: EmailSignature; error?: string } {
+  const record = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+  const clean = { ...EMPTY_SIGNATURE };
+
+  clean.enabled = Boolean(record.enabled);
+
+  for (const field of SIGNATURE_TEXT_FIELDS) {
+    const value = record[field];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== 'string') {
+      return { error: `Signature "${field}" must be a string.` };
+    }
+    if (value.length > SIGNATURE_MAX_LENGTH[field]) {
+      return { error: `Signature "${field}" must be at most ${SIGNATURE_MAX_LENGTH[field]} characters.` };
+    }
+    clean[field] = field === 'address' ? value : value.trim();
+  }
+
+  return { value: clean };
 }
 
 export function validate(input: unknown): { value?: EmailConfig; error?: string } {
@@ -55,31 +107,17 @@ export function validate(input: unknown): { value?: EmailConfig; error?: string 
     }
     clean[field] = field === 'body' ? value : value.trim();
   }
+
+  const { value: signature, error: signatureError } = validateSignature(record.signature);
+  if (signatureError) return { error: signatureError };
+  clean.signature = signature!;
+
   return { value: clean };
 }
 
 export async function getConfig(): Promise<EmailConfig> {
-  if (cached) return { ...cached };
-
-  if (hasBlobStore()) {
-    try {
-      const result = await blobGet(BLOB_PATHNAME, { access: 'private' });
-      if (result) {
-        const text = await new Response(result.stream).text();
-        const { value } = validate(JSON.parse(text));
-        if (value) {
-          cached = value;
-          return { ...value };
-        }
-      }
-    } catch {
-      // Falls through below.
-    }
-  }
-
-  const local = !isVercel ? readLocalFile() : null;
-  cached = local ?? { ...(defaultConfig as EmailConfig) };
-  return { ...cached };
+  const db = await getDb();
+  return { ...db.data, signature: { ...db.data.signature } };
 }
 
 export class ConfigError extends Error {
@@ -94,31 +132,10 @@ export async function saveConfig(input: unknown): Promise<EmailConfig> {
   const { value, error } = validate(input);
   if (error) throw new ConfigError(error, 400);
 
-  if (hasBlobStore()) {
-    await blobPut(BLOB_PATHNAME, JSON.stringify(value, null, 2), {
-      access: 'private',
-      contentType: 'application/json',
-      addRandomSuffix: false,
-      allowOverwrite: true,
-    });
-    cached = value!;
-    return { ...cached };
-  }
-
-  if (isVercel) {
-    throw new ConfigError(
-      'No Blob store is connected, so configuration changes cannot be saved. Connect a Blob store to this project in Vercel and redeploy.',
-      500,
-    );
-  }
-
-  // Local dev without a Blob store: persist to a git-ignored file, like the old app did.
-  fs.mkdirSync(path.dirname(LOCAL_CONFIG_PATH), { recursive: true });
-  const tmp = `${LOCAL_CONFIG_PATH}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', 'utf8');
-  fs.renameSync(tmp, LOCAL_CONFIG_PATH);
-  cached = value!;
-  return { ...cached };
+  const db = await getDb();
+  db.data = value!;
+  await db.write();
+  return { ...db.data, signature: { ...db.data.signature } };
 }
 
 export const RESUME_FILE = 'MANISH_RESUME.pdf';

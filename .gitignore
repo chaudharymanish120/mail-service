@@ -4,8 +4,7 @@ node_modules/
 .env.*
 !.env.example
 !.env.local.example
-data/*.local.json
-data/*.tmp
+data/
 npm-debug.log*
 .DS_Store
 *.tsbuildinfo

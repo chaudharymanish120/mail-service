@@ -1,21 +1,35 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { api, getToken, setToken } from '@/lib/client/api';
 import LoginForm from '@/components/LoginForm';
 import Message, { MessageState } from '@/components/Message';
+import { signatureHtml, type EmailSignature as Signature } from '@/lib/shared/render-email';
+
+const EMPTY_SIGNATURE: Signature = {
+  enabled: false,
+  closing: '',
+  name: '',
+  jobTitle: '',
+  company: '',
+  address: '',
+  phone: '',
+  email: '',
+};
 
 interface ConfigData {
   subject: string;
-  title: string;
   body: string;
+  signature: Signature;
   resumeFound: boolean;
   resumeFile: string;
 }
 
 export default function AdminPage() {
   const [view, setView] = useState<'checking' | 'login' | 'app'>('checking');
-  const [fields, setFields] = useState({ subject: '', title: '', body: '' });
+  const [fields, setFields] = useState({ subject: '', body: '' });
+  const [signature, setSignature] = useState<Signature>(EMPTY_SIGNATURE);
+  const signaturePreview = useMemo(() => signatureHtml(signature), [signature]);
   const [resumeStatus, setResumeStatus] = useState('');
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<MessageState>(null);
@@ -36,7 +50,8 @@ export default function AdminPage() {
       setMessage({ type: 'error', text: data.error || 'Failed to load configuration.' });
       return;
     }
-    setFields({ subject: data.subject, title: data.title, body: data.body });
+    setFields({ subject: data.subject, body: data.body });
+    setSignature({ ...EMPTY_SIGNATURE, ...data.signature });
     setResumeStatus(
       data.resumeFound
         ? `Resume: resume/${data.resumeFile} found ✓`
@@ -57,7 +72,7 @@ export default function AdminPage() {
     setSaving(true);
     setMessage(null);
     try {
-      const { res, data } = await api<{ error?: string }>('PUT', '/api/config', fields);
+      const { res, data } = await api<{ error?: string }>('PUT', '/api/config', { ...fields, signature });
       if (res.status === 401) {
         showLogin();
         return;
@@ -97,17 +112,6 @@ export default function AdminPage() {
           />
         </div>
         <div className="field">
-          <label htmlFor="title">Email Title</label>
-          <input
-            id="title"
-            type="text"
-            maxLength={300}
-            required
-            value={fields.title}
-            onChange={(e) => setFields((f) => ({ ...f, title: e.target.value }))}
-          />
-        </div>
-        <div className="field">
           <label htmlFor="body">Email Body</label>
           <textarea
             id="body"
@@ -117,6 +121,101 @@ export default function AdminPage() {
             onChange={(e) => setFields((f) => ({ ...f, body: e.target.value }))}
           />
         </div>
+
+        <div className="field checkbox-field">
+          <label htmlFor="sig-enabled">
+            <input
+              id="sig-enabled"
+              type="checkbox"
+              checked={signature.enabled}
+              onChange={(e) => setSignature((s) => ({ ...s, enabled: e.target.checked }))}
+            />
+            {' '}Include signature in emails
+          </label>
+        </div>
+
+        {signature.enabled && (
+          <fieldset className="signature-fields">
+            <legend>Signature</legend>
+            <div className="field">
+              <label htmlFor="sig-closing">Closing line</label>
+              <input
+                id="sig-closing"
+                type="text"
+                maxLength={100}
+                placeholder="Thanks and Regards"
+                value={signature.closing}
+                onChange={(e) => setSignature((s) => ({ ...s, closing: e.target.value }))}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="sig-name">Name</label>
+              <input
+                id="sig-name"
+                type="text"
+                maxLength={150}
+                value={signature.name}
+                onChange={(e) => setSignature((s) => ({ ...s, name: e.target.value }))}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="sig-job-title">Job title</label>
+              <input
+                id="sig-job-title"
+                type="text"
+                maxLength={150}
+                value={signature.jobTitle}
+                onChange={(e) => setSignature((s) => ({ ...s, jobTitle: e.target.value }))}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="sig-company">Company</label>
+              <input
+                id="sig-company"
+                type="text"
+                maxLength={150}
+                value={signature.company}
+                onChange={(e) => setSignature((s) => ({ ...s, company: e.target.value }))}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="sig-address">Address</label>
+              <textarea
+                id="sig-address"
+                maxLength={500}
+                className="signature-address"
+                value={signature.address}
+                onChange={(e) => setSignature((s) => ({ ...s, address: e.target.value }))}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="sig-phone">Phone</label>
+              <input
+                id="sig-phone"
+                type="text"
+                maxLength={60}
+                value={signature.phone}
+                onChange={(e) => setSignature((s) => ({ ...s, phone: e.target.value }))}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="sig-email">Email</label>
+              <input
+                id="sig-email"
+                type="email"
+                maxLength={254}
+                value={signature.email}
+                onChange={(e) => setSignature((s) => ({ ...s, email: e.target.value }))}
+              />
+            </div>
+
+            <div className="field">
+              <label>Preview</label>
+              <div className="signature-preview" dangerouslySetInnerHTML={{ __html: signaturePreview }} />
+            </div>
+          </fieldset>
+        )}
+
         <button id="save-btn" type="submit" disabled={saving}>
           {saving ? 'Saving…' : 'Save Configuration'}
         </button>

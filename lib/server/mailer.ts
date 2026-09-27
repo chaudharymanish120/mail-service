@@ -1,6 +1,7 @@
 import fs from 'fs';
 import nodemailer, { Transporter } from 'nodemailer';
 import { getConfig, RESUME_FILE, RESUME_PATH } from './config';
+import { emailContentHtml, emailText } from '../shared/render-email';
 
 const REQUIRED_ENV = ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASSWORD', 'FROM_EMAIL'] as const;
 
@@ -30,29 +31,15 @@ function getTransporter(): Transporter {
   return transporter;
 }
 
-function escapeHtml(text: string) {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function buildHtml(title: string, body: string) {
-  const paragraphs = body
-    .split(/\n{2,}/)
-    .map((p) => `<p style="margin:0 0 14px">${escapeHtml(p).replace(/\n/g, '<br>')}</p>`)
-    .join('\n');
+function buildHtml(body: string, signature: Parameters<typeof emailContentHtml>[1]) {
   return `<!doctype html>
 <html><body style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#222">
-<h2 style="font-size:18px;margin:0 0 16px">${escapeHtml(title)}</h2>
-${paragraphs}
+${emailContentHtml(body, signature)}
 </body></html>`;
 }
 
 export async function sendResume(recipient: string) {
-  const { subject, title, body } = await getConfig();
+  const { subject, body, signature } = await getConfig();
 
   let resume: Buffer;
   try {
@@ -65,8 +52,8 @@ export async function sendResume(recipient: string) {
     from: process.env.FROM_EMAIL,
     to: recipient,
     subject,
-    text: `${title}\n\n${body}`,
-    html: buildHtml(title, body),
+    text: emailText(body, signature),
+    html: buildHtml(body, signature),
     attachments: [
       {
         filename: process.env.RESUME_FILENAME || RESUME_FILE,
