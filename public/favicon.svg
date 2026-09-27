@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#1f6feb"/>
+  <!-- resume sheet peeking out of the envelope -->
+  <rect x="20" y="11" width="24" height="28" rx="2.5" fill="#ffffff"/>
+  <rect x="24" y="17" width="16" height="3" rx="1.5" fill="#1f6feb"/>
+  <rect x="24" y="23" width="12" height="2.5" rx="1.25" fill="#9dbdf5"/>
+  <!-- envelope -->
+  <path d="M10 28 L32 42 L54 28 V49 a4 4 0 0 1 -4 4 H14 a4 4 0 0 1 -4 -4 Z" fill="#ffffff"/>
+  <path d="M10 28 L32 42 L54 28" fill="none" stroke="#1a5fd0" stroke-width="2.5" stroke-linejoin="round"/>
+</svg>
