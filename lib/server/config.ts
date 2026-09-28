@@ -1,4 +1,5 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { Low } from 'lowdb';
 import { JSONFile } from 'lowdb/node';
@@ -41,13 +42,25 @@ const EMPTY_SIGNATURE: EmailSignature = {
 };
 
 // Saved edits (from the admin page) are kept in a small JSON database file (lowdb).
-// On Vercel, only /tmp is writable, and it is wiped on every cold start and is not
-// shared across instances, so a save there only lasts until the next cold start — it
-// does not survive a redeploy or reliably reach every running instance. Locally
-// (`next dev` / `next start`), the file lives under `data/` and persists normally.
-const DB_PATH = process.env.VERCEL
-  ? path.join('/tmp', 'email-config.json')
-  : path.join(process.cwd(), 'data', 'email-config.json');
+// Most serverless hosts (Vercel, Netlify, AWS Lambda, ...) deploy the app to a
+// read-only filesystem where only the OS temp dir is writable, and that temp dir is
+// wiped on every cold start and isn't shared across instances — so a save there only
+// lasts until the next cold start and won't reliably reach every running instance.
+// Locally (`next dev` / `next start`) the real project directory is writable, so the
+// file lives under `data/` there and persists normally across restarts.
+//
+// Rather than hardcode a list of platform env vars, this just tries the project
+// directory first and falls back to the OS temp dir if that isn't writable.
+function resolveDbPath(): string {
+  const primary = path.join(process.cwd(), 'data', 'email-config.json');
+  try {
+    fs.mkdirSync(path.dirname(primary), { recursive: true });
+    fs.accessSync(path.dirname(primary), fs.constants.W_OK);
+    return primary;
+  } catch {
+    return path.join(os.tmpdir(), 'resume-email-service', 'email-config.json');
+  }
+}
 
 const DEFAULT_CONFIG: EmailConfig = {
   ...(defaultConfig as Omit<typeof defaultConfig, 'signature'>),
@@ -59,8 +72,9 @@ let dbPromise: Promise<Low<EmailConfig>> | null = null;
 async function getDb(): Promise<Low<EmailConfig>> {
   if (!dbPromise) {
     dbPromise = (async () => {
-      fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-      const db = new Low<EmailConfig>(new JSONFile(DB_PATH), { ...DEFAULT_CONFIG });
+      const dbPath = resolveDbPath();
+      fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+      const db = new Low<EmailConfig>(new JSONFile(dbPath), { ...DEFAULT_CONFIG });
       await db.read();
       const { value } = validate(db.data);
       db.data = value ?? { ...DEFAULT_CONFIG };
